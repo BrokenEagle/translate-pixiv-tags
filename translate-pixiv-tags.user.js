@@ -34,8 +34,9 @@
 // @require      https://cdnjs.cloudflare.com/ajax/libs/underscore.js/1.9.1/underscore.js
 // @require      https://github.com/evazion/translate-pixiv-tags/raw/lib-20190830/lib/jquery-gm-shim.js
 // @resource     jquery_qtip_css https://cdnjs.cloudflare.com/ajax/libs/qtip2/3.0.3/jquery.qtip.min.css
-// @resource     danbooru_icon https://github.com/evazion/translate-pixiv-tags/raw/resource-20190903/resource/danbooru-icon.ico
-// @resource     settings_icon https://github.com/evazion/translate-pixiv-tags/raw/resource-20190903/resource/settings-icon.svg
+// @resource     danbooru_icon https://github.com/evazion/translate-pixiv-tags/raw/resource-20191118/resource/danbooru-icon.ico
+// @resource     settings_icon https://github.com/evazion/translate-pixiv-tags/raw/resource-20191118/resource/settings-icon.svg
+// @resource     empty_icon https://github.com/brokeneagle/translate-pixiv-tags/raw/resource-20191118/resource/empty-icon.svg
 // @connect      donmai.us
 // @noframes
 // ==/UserScript==
@@ -1149,7 +1150,7 @@ function buildPostPreview (post) {
     if (post.preview_file_url && !post.preview_file_url.endsWith("/images/download-preview.png")) {
         if (CORS_IMAGE_DOMAINS.includes(window.location.host)) {
             // Temporaly set transparent 1x1 image
-            $preview.find("img").prop("src", "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7");
+            $preview.find("img").prop("src", GM_getResourceURL("empty_icon"));
             getImage(post.preview_file_url).then((blob) => {
                 const imageBlob = blob.slice(0, blob.size, "image/jpeg");
                 const blobUrl = window.URL.createObjectURL(imageBlob);
