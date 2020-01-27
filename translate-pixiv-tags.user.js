@@ -166,7 +166,7 @@ const POST_FIELDS = [
 ].join(",");
 const POST_COUNT_FIELDS = "post_count";
 const TAG_FIELDS = "name,category";
-const WIKI_FIELDS = "title,category_name";
+const WIKI_FIELDS = "title,category_name,other_names";
 const ARTIST_FIELDS = "id,name,is_banned,other_names,urls";
 const TAG_ALIASES_FILEDS = "consequent_name";
 
@@ -319,8 +319,162 @@ const PROGRAM_CSS = `
 }
 `;
 
+// ----TEST SECTION
+
+const CACHE_PARAM = (CACHE_LIFETIME ? { expires_in: CACHE_LIFETIME } : {});
+
+const MAXIMUM_URI_LENGTH = 8000;
+const LIMIT_PARAM = { limit: 1000 };
+
+function WikiParams (otherNamesList) {
+    return {
+        search: {
+            other_names_include_any_array: otherNamesList,
+            is_deleted: false,
+        },
+        only: WIKI_FIELDS,
+    };
+}
+
+function ArtistParams (nameList) {
+    return {
+        search: {
+            name_comma: nameList.join(","),
+            is_active: true,
+        },
+        only: ARTIST_FIELDS,
+    };
+}
+
+function TagParams (nameList) {
+    return {
+        search: {
+            name_comma: nameList.join(","),
+        },
+        only: TAG_FIELDS,
+    };
+}
+
+function AliasParams (nameList) {
+    return {
+        search: {
+            antecedent_name_comma: nameList.join(","),
+        },
+        only: TAG_ALIASES_FILEDS,
+    };
+}
+
+function UrlParams (urlList) {
+    return {
+        search: {
+            normalized_url_array: urlList,
+        },
+        // The only parameter does not work with artist urls... yet
+    };
+}
+
+function UrlFilter (artistUrls) {
+    return artistUrls.filter((artistUrl) => artistUrl.artist.is_active);
+}
+
+const NETWORK_REQUEST_DICT = {
+    wiki: {
+        url: "/wiki_pages",
+        params: WikiParams,
+        data_key: "other_names",
+        data_type: "array",
+    },
+    artist: {
+        url: "/artists",
+        params: ArtistParams,
+        data_key: "name",
+        data_type: "string",
+    },
+    tag: {
+        url: "/tags",
+        params: TagParams,
+        data_key: "name",
+        data_type: "string",
+    },
+    alias: {
+        url: "/tag_aliases",
+        params: AliasParams,
+        data_key: "name",
+        data_type: "string",
+    },
+    url: {
+        url: "/artist_urls",
+        params: UrlParams,
+        filter: UrlFilter,
+        data_key: "normalized_url",
+        data_type: "string",
+    },
+};
+
+const QUEUED_NETWORK_REQUESTS = [];
+
+function queueNetworkRequest (type, item) {
+    const request = {
+        type,
+        item,
+        promise: $.Deferred(),
+    };
+    QUEUED_NETWORK_REQUESTS.push(request);
+    return request.promise;
+}
+
+const queueNetworkRequestMemoized = _.memoize(queueNetworkRequest, memoizeKey);
+
+function intervalNetworkHandler () {
+    Object.keys(NETWORK_REQUEST_DICT).forEach((type) => {
+        const requests = QUEUED_NETWORK_REQUESTS.filter((request) => (request.type === type));
+        if (requests.length > 0) {
+            const items = requests.map((request) => request.item);
+            const typeParam = NETWORK_REQUEST_DICT[type].params(items);
+            const params = Object.assign(typeParam, LIMIT_PARAM, CACHE_PARAM);
+            const url = `${BOORU}${NETWORK_REQUEST_DICT[type].url}.json`;
+            getLong(url, params, requests, type);
+        }
+    });
+    QUEUED_NETWORK_REQUESTS.length = 0;
+}
+
+function getLong (url, params, requests, type) {
+    let func = $.getJSON;
+    let finalParams = params;
+    if ($.param(params) > MAXIMUM_URI_LENGTH) {
+        finalParams = Object.assign(finalParams, { _method: "get" });
+        func = $.post;
+    }
+    func(url, finalParams).then((resp) => {
+        let finalResp = resp;
+        if (NETWORK_REQUEST_DICT[type].filter) {
+            finalResp = NETWORK_REQUEST_DICT[type].filter(resp);
+        }
+        const dataKey = NETWORK_REQUEST_DICT[type].data_key;
+        requests.forEach((request) => {
+            let found = [];
+            if (NETWORK_REQUEST_DICT[type].data_type === "string") {
+                found = finalResp.filter((data) => data[dataKey] === request.item);
+            } else if (NETWORK_REQUEST_DICT[type].data_type === "array") {
+                found = finalResp.filter((data) => data[dataKey].includes(request.item));
+            }
+            request.promise.resolve(found);
+        });
+    });
+}
+
+function normalizeProfileURL (profileUrl, lowerCase = true) {
+    const url = profileUrl.replace(/^https/, "http").replace(/\/$/, "");
+    const lowerUrl = (lowerCase ? url.toLowerCase() : url);
+    return `${lowerUrl}/`;
+}
+
+// ----
+
 function memoizeKey (...args) {
-    return JSON.stringify(args);
+    const paramHash = Object.assign(...args.map((param, i) => ({ [i]: param })));
+    return $.param(paramHash);
 }
 
 // Tag function for template literals to remove newlines and leading spaces
@@ -484,16 +638,7 @@ async function translateTag (target, tagName, options) {
         return;
     }
 
-    const wikiPages = await get(
-        "/wiki_pages",
-        {
-            search: {
-                other_names_match: normalizedTag,
-                is_deleted: false,
-            },
-            only: WIKI_FIELDS,
-        },
-    );
+    const wikiPages = await queueNetworkRequestMemoized("wiki", normalizedTag);
 
     let tags = [];
     if (wikiPages.length > 0) {
@@ -505,29 +650,11 @@ async function translateTag (target, tagName, options) {
     // `normalizedTag` consists of only ASCII characters except percent, asterics, and comma
     } else if (normalizedTag.match(/^[\u0020-\u0024\u0026-\u0029\u002B\u002D-\u007F]+$/)) {
         const strictTagName = normalizedTag.replace(/\s/g, "_").toLowerCase();
-        tags = await get(
-            "/tags",
-            {
-                search: { name: strictTagName },
-                only: TAG_FIELDS,
-            },
-        );
+        tags = await queueNetworkRequestMemoized("tag", strictTagName);
         if (tags.length === 0) {
-            tags = await get(
-                "/tag_aliases",
-                {
-                    search: { antecedent_name: strictTagName },
-                    only: TAG_ALIASES_FILEDS,
-                },
-            );
+            tags = await queueNetworkRequestMemoized("alias", strictTagName);
             if (tags.length > 0) {
-                tags = await get(
-                    "/tags",
-                    {
-                        search: { name: tags[0].consequent_name },
-                        only: TAG_FIELDS,
-                    },
-                );
+                tags = await queueNetworkRequestMemoized("tag", tags[0].consequent_name);
             }
         }
         tags = tags.map((tag) => ({
@@ -584,16 +711,8 @@ function addDanbooruTags ($target, tags, options = {}) {
 async function translateArtistByURL (element, profileUrl, options) {
     if (!profileUrl) return;
 
-    const artists = await get(
-        "/artists",
-        {
-            search: {
-                url_matches: profileUrl,
-                is_active: true,
-            },
-            only: ARTIST_FIELDS,
-        },
-    );
+    const artistUrls = await queueNetworkRequestMemoized("url", normalizeProfileURL(profileUrl));
+    const artists = artistUrls.map((artistUrl) => artistUrl.artist);
 
     if (artists.length === 0) {
         if (DEBUG) {
@@ -618,16 +737,7 @@ async function translateArtistByURL (element, profileUrl, options) {
 async function translateArtistByName (element, artistName, options) {
     if (!artistName) return;
 
-    const artists = await get(
-        "/artists",
-        {
-            search: {
-                name: artistName.replace(/ /g, "_"),
-                is_active: true,
-            },
-            only: ARTIST_FIELDS,
-        },
-    );
+    const artists = await queueNetworkRequestMemoized("artist", artistName.replace(/ /g, "_"));
 
     if (artists.length === 0) {
         if (DEBUG) {
@@ -2317,10 +2427,6 @@ function initialize () {
     GM_addStyle(PROGRAM_CSS);
     GM_addStyle(GM_getResourceText("jquery_qtip_css"));
     GM_registerMenuCommand("Settings", showSettings, "S");
-    // So that JSON stringify can be used to generate memoize keys
-    /* eslint-disable no-extend-native */
-    RegExp.prototype.toJSON = RegExp.prototype.toString;
-    /* eslint-enable no-extend-native */
 
     switch (window.location.host) {
         case "www.pixiv.net":
@@ -2347,6 +2453,7 @@ function initialize () {
                 initializeArtStation();
             }
     }
+    setInterval(intervalNetworkHandler, 500);
 }
 
 //------------------------
