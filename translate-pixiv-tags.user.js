@@ -316,7 +316,7 @@ const NETWORK_REQUEST_DICT = {
         params (otherNamesList) {
             return {
                 search: {
-                    other_names_include_any_lower_array: otherNamesList,
+                    other_names_include_any_lower_space: otherNamesList.join(' '),
                     is_deleted: false,
                 },
                 only: this.fields,
@@ -374,7 +374,7 @@ const NETWORK_REQUEST_DICT = {
         params (urlList) {
             return {
                 search: {
-                    normalized_url_lower_array: urlList,
+                    normalized_url_lower_space: urlList.join(' '),
                 },
                 only: this.fields,
             };
